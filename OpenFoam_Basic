@@ -1,0 +1,1986 @@
+OpenFoam의 기본적인 내용을 한글로 작성하였습니다. 도움이 됐으면 좋겠습니다.
+중간에 주석들과 이상한 말이 들어가 있습니다. 이해해주시면 감사하겠습니다.
+
+변경 log
+--  2026-09-17  --
+일개 학부생이 작성한 내용이라 잘못된 점이 있을 수 있습니다.
+잘못된점은 수정 후 코멘트 남겨주시면 감사하겠습니다.
+--  2026-09-17  --
+
+목차는 나중에 추가할께요 힘들어요 집갈래요
+
+---------------------------------------------------------------------
+[중요 안전 원칙]
+---------------------------------------------------------------------
+
+1. OpenFOAM case를 수정하기 전에는 현재 경로를 확인한다.
+
+    pwd
+
+2. 파일을 보기만 할 때는 다음을 우선한다.
+
+    cat system/controlDict
+    less system/fvSolution
+    grep -n "maxCo" system/controlDict
+
+3. nano는 파일 내용을 직접 변경한다.
+
+    nano system/controlDict
+
+   저장: Ctrl+O -> Enter
+   종료: Ctrl+X
+
+4. rm -rf는 특별한 이유가 없으면 사용하지 않는다.
+   백업이 필요하면 복사 또는 이동을 우선한다.
+
+5. 병렬 계산 중인 case의 processor* 폴더나 system 파일을 함부로 수정하지 않는다.
+
+6. 클러스터에서는 login node에서 직접 mpirun으로 CFD 계산을 실행하지 않는다.
+   계산은 반드시 스케줄러(SLURM 등)를 통해 compute node에 제출한다.
+
+=====================================================================
+PART 1. OpenFOAM CASE의 큰 구조
+=====================================================================
+
+가장 기본적인 case 구조:
+
+CASE/
+├── 0/
+│   ├── U
+│   ├── p
+│   ├── k
+│   ├── epsilon
+│   ├── nut
+│   └── C              # passive scalar를 사용할 때
+│
+├── constant/
+│   ├── transportProperties
+│   ├── turbulenceProperties
+│   └── polyMesh/
+│       ├── points
+│       ├── faces
+│       ├── owner
+│       ├── neighbour
+│       └── boundary
+│
+└── system/
+    ├── controlDict
+    ├── fvSchemes
+    ├── fvSolution
+    ├── decomposeParDict
+    ├── blockMeshDict          # blockMesh 사용 시
+    └── snappyHexMeshDict      # snappyHexMesh 사용 시
+
+핵심 개념:
+
+0/        = 계산 시작 시점의 물리장과 경계조건
+constant/ = 계산 중 변하지 않는 물성, 난류모델, 격자 정보
+system/   = 시간진행, 수치기법, 선형솔버, 병렬분할 등 계산방법
+
+즉,
+
+"무엇을 푸는가"       -> 0/
+"어떤 물리모델인가"   -> constant/
+"어떻게 계산하는가"   -> system/
+
+---------------------------------------------------------------------
+1.1 OpenFOAM의 dictionary 개념
+---------------------------------------------------------------------
+
+OpenFOAM 설정 파일은 대부분 dictionary 형식이다.
+
+예:
+
+    maxCo           1.5;
+    maxDeltaT       0.002;
+
+각 줄의 기본 구조:
+
+    keyword         value;
+
+중괄호는 하위 dictionary를 만든다.
+
+    PIMPLE
+    {
+        nOuterCorrectors          2;
+        nCorrectors               2;
+        nNonOrthogonalCorrectors  1;
+    }
+
+세미콜론(;) 누락은 매우 흔한 오류다
+대소문자도 구분한다
+
+잘못된 예:
+
+    numberOfSubDomains 12;
+
+올바른 예:
+
+    numberOfSubdomains 12;
+
+=====================================================================
+PART 2. 0/ 폴더: 초기조건과 경계조건
+=====================================================================
+
+0/ 폴더의 각 파일은 하나의 field를 정의한다.
+
+대표적인 field:
+
+U        : 속도 벡터 [m/s]
+p        : 운동학적 압력(비압축성 OpenFOAM에서 보통 p/rho) [m2/s2]
+k        : 난류 운동에너지 [m2/s2]
+epsilon  : 난류 소산률 [m2/s3]
+nut      : 난류 동점성계수 [m2/s]
+C        : passive scalar 농도 또는 무차원 추적자
+
+---------------------------------------------------------------------
+2.1 field 파일의 공통 구조
+---------------------------------------------------------------------
+
+예: 0/U
+
+    FoamFile
+    {
+        format      ascii;
+        class       volVectorField;
+        object      U;
+    }
+
+    dimensions      [0 1 -1 0 0 0 0];
+
+    internalField   uniform (0 0 0);
+
+    boundaryField
+    {
+        duct_inlet
+        {
+            type    fixedValue;
+            value   uniform (0 0 -10);
+        }
+
+        outlet
+        {
+            type    zeroGradient;
+        }
+
+        walls
+        {
+            type    noSlip;
+        }
+    }
+
+class의 의미:
+
+dimensions 는 각 SI단위의 지수이다 
+[kg m s k kmol A cd]
+본인의 물리량에 맞게 지수를 선택하자
+예: m/s [0 1 -1 0 0 0 0]
+
+volScalarField  = 각 셀 중심에 정의된 스칼라장
+volVectorField  = 각 셀 중심에 정의된 벡터장
+surfaceScalarField = face에 정의된 스칼라장
+
+U는 벡터이므로 volVectorField.
+p, k, epsilon, C는 스칼라이므로 volScalarField.
+
+---------------------------------------------------------------------
+2.2 internalField
+---------------------------------------------------------------------
+
+계산 시작 시 domain 내부 전체의 초기값.
+
+    internalField uniform 0;
+
+또는 벡터:
+
+    internalField uniform (0 0 0);
+
+초기조건이 실제 해와 지나치게 멀면 초기 과도구간이 길어질 수 있다.
+하지만 비정상 해석에서는 물리적으로 정당한 초기조건을 사용하는 것이 중요하다.
+
+---------------------------------------------------------------------
+2.3 자주 쓰는 boundary condition
+---------------------------------------------------------------------
+
+fixedValue
+- 경계값을 직접 고정.
+- inlet에 가장 흔함.
+
+    type fixedValue;
+    value uniform (0 0 -10);
+
+zeroGradient
+- 경계 법선방향 gradient를 0으로 둠.
+- outlet에서 흔히 사용.
+
+    type zeroGradient;
+
+noSlip
+- 벽에서 U = 0.
+
+    type noSlip;
+
+fixedFluxPressure
+- 속도/플럭스 조건과 일관되도록 pressure gradient를 조정.
+
+inletOutlet
+- 유출 시 zeroGradient, 역류 시 지정값 사용.
+- 역류 가능 outlet에 유용.
+
+codedFixedValue
+- 시간함수 등 사용자 코드를 넣어 경계값을 정의.
+- pulsating inlet에 활용 가능.
+
+---------------------------------------------------------------------
+2.4 nano용 0/U 템플릿
+---------------------------------------------------------------------
+
+    nano 0/U
+
+복붙용 예시:
+
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM                                                                  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+
+dimensions      [0 1 -1 0 0 0 0];
+
+internalField   uniform (0 0 0);
+
+boundaryField
+{
+    duct_inlet
+    {
+        type            fixedValue;
+        value           uniform (0 0 -10);
+    }
+
+    outlet
+    {
+        type            zeroGradient;
+    }
+
+    walls
+    {
+        type            noSlip;
+    }
+}
+
+---------------------------------------------------------------------
+2.5 nano용 0/p 템플릿
+---------------------------------------------------------------------
+
+    nano 0/p
+
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    object      p;
+}
+
+dimensions      [0 2 -2 0 0 0 0];
+
+internalField   uniform 0;
+
+boundaryField
+{
+    duct_inlet
+    {
+        type            zeroGradient;
+    }
+
+    outlet
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+
+    walls
+    {
+        type            zeroGradient;
+    }
+}
+
+주의:
+pressure BC는 case의 유동방향, solver, outlet 구성에 따라 달라질 수 있다.
+무조건 위 템플릿을 복사하지 말고 기존 검증 case와 비교할 것.
+
+---------------------------------------------------------------------
+2.6 k의 물리적 의미
+---------------------------------------------------------------------
+
+k = Turbulent Kinetic Energy, 난류 운동에너지.
+
+정의:
+
+    k = 1/2 (u'^2 + v'^2 + w'^2)
+
+여기서 u', v', w'는 평균속도에서 벗어난 난류 속도변동이다.
+
+k가 크다 = 난류 속도변동 에너지가 크다.
+
+단위:
+
+    [m2/s2]
+
+RANS에서는 모든 난류 구조를 직접 계산하지 않고,
+평균 유동에 난류의 효과를 모델링하기 위해 k와 epsilon 등을 푼다.
+
+---------------------------------------------------------------------
+2.7 epsilon의 물리적 의미
+---------------------------------------------------------------------
+
+epsilon = Turbulent Dissipation Rate, 난류 소산률.
+
+큰 와류에서 작은 와류로 전달된 난류 운동에너지가
+최종적으로 점성에 의해 열로 소산되는 속도를 나타낸다.
+
+단위:
+
+    [m2/s3]
+
+k가 "얼마나 많은 난류 에너지가 있는가"라면,
+epsilon은 "그 에너지가 얼마나 빠르게 사라지는가"에 가깝다.
+
+k와 epsilon으로 난류 시간/길이 척도를 추정할 수 있다.
+
+대표 관계:
+
+    turbulent time scale ~ k / epsilon
+
+    turbulent length scale ~ k^(3/2) / epsilon
+
+---------------------------------------------------------------------
+2.8 nut의 의미
+---------------------------------------------------------------------
+
+nut = turbulent kinematic viscosity.
+난류가 평균 운동량 전달을 강화하는 효과를 점성처럼 표현한 값.
+
+RNG k-epsilon 계열에서도 기본적으로 k와 epsilon으로부터 계산된다.
+
+보통:
+
+    nut ~ Cmu * k^2 / epsilon
+
+단, RNG 모델에서는 계수와 보정 방식이 standard k-epsilon과 다르니까 본인 모델에 따라 화이팅!
+
+---------------------------------------------------------------------
+2.9 k 템플릿
+---------------------------------------------------------------------
+
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+
+dimensions      [0 2 -2 0 0 0 0];
+internalField   uniform 0.375;
+
+boundaryField
+{
+    duct_inlet
+    {
+        type            fixedValue;
+        value           uniform 0.375;
+    }
+
+    outlet
+    {
+        type            zeroGradient;
+    }
+
+    walls
+    {
+        type            kqRWallFunction;
+        value           uniform 0.375;
+    }
+}
+
+---------------------------------------------------------------------
+2.10 epsilon 템플릿
+---------------------------------------------------------------------
+
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    object      epsilon;
+}
+
+dimensions      [0 2 -3 0 0 0 0];
+internalField   uniform 1.8;
+
+boundaryField
+{
+    duct_inlet
+    {
+        type            fixedValue;
+        value           uniform 1.8;
+    }
+
+    outlet
+    {
+        type            zeroGradient;
+    }
+
+    walls
+    {
+        type            epsilonWallFunction;
+        value           uniform 1.8;
+    }
+}
+
+주의:
+k=0.375, epsilon=1.8은 특정 case의 예시값이다.
+다른 case에서 자동으로 옳은 값이 아니다.
+
+---------------------------------------------------------------------
+2.11 nut 템플릿
+---------------------------------------------------------------------
+
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    object      nut;
+}
+
+dimensions      [0 2 -1 0 0 0 0];
+internalField   uniform 0;
+
+boundaryField
+{
+    duct_inlet
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+
+    outlet
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+
+    walls
+    {
+        type            nutkWallFunction;
+        value           uniform 0;
+    }
+}
+
+---------------------------------------------------------------------
+2.12 passive scalar C
+---------------------------------------------------------------------
+
+C는 오염물질 자체를 별도의 화학종 모델 없이 추적할 때 사용할 수 있다.
+
+예:
+
+room 초기 C = 1
+fresh air inlet C = 0
+
+그러면 시간이 지날수록 C가 감소하는 정도로 환기 성능을 평가할 수 있다.
+
+C는 반드시 solver/functionObject 설정과 일치해야 한다.
+
+예시:
+
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    object      C;
+}
+
+dimensions      [0 0 0 0 0 0 0];
+internalField   uniform 1;
+
+boundaryField
+{
+    duct_inlet
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+
+    outlet
+    {
+        type            zeroGradient;
+    }
+
+    walls
+    {
+        type            zeroGradient;
+    }
+}
+
+=====================================================================
+PART 3. constant/ 폴더
+=====================================================================
+
+---------------------------------------------------------------------
+3.1 turbulenceProperties
+---------------------------------------------------------------------
+
+RANS RNG k-epsilon 예시:
+
+    nano constant/turbulenceProperties
+
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+
+simulationType  RAS;
+
+RAS
+{
+    RASModel        RNGkEpsilon;
+    turbulence      on;
+    printCoeffs     on;
+}
+
+simulationType 대표:
+
+laminar = 난류모델 사용 안 함
+RAS     = Reynolds-Averaged Simulation
+LES     = Large Eddy Simulation
+
+그 외 뭐가 더 많을것이다
+---------------------------------------------------------------------
+3.2 RANS / LES / DNS 차이
+---------------------------------------------------------------------
+
+DNS 
+- 모든 난류 스케일 직접 계산
+- 가장 높은 해상도 필요
+- 공학 규모에서는 계산비용이 매우 큼
+
+LES - 시간 빌게이츠는 써도된다
+- 큰 와류는 직접 계산
+- 작은 와류는 모델링
+- RANS보다 시간/격자 비용 큼
+
+RANS
+- 평균 유동을 계산하고 난류효과를 모델링
+- 산업 CFD에서 매우 널리 사용
+- 계산비용 상대적으로 낮음
+
+---------------------------------------------------------------------
+3.3 Standard k-epsilon / RNG k-epsilon / Realizable k-epsilon
+---------------------------------------------------------------------
+
+Standard k-epsilon
+장점:
+- 가장 전통적.
+- 계산 안정성이 비교적 좋음.
+- 산업 적용 사례 풍부.
+단점:
+- 강한 회전, 곡률, 박리, 복잡한 strain에서 한계.
+
+RNG k-epsilon -이거 쓰는 중-
+장점:
+- standard 모델을 RNG 이론으로 보정.
+- 강한 strain, swirl, recirculation에서 개선되는 경우가 많음.
+- 실내 환기/제트/재순환 문제에 자주 사용됨.
+단점:
+- 여전히 RANS이며 세부 비정상 와류를 직접 해상하지 않음.
+- 수치적으로 민감할 수 있음.
+
+Realizable k-epsilon
+장점:
+- Reynolds stress에 대한 물리적 제약을 더 잘 만족하도록 구성.
+- 회전/분리유동에서 개선될 수 있음.
+단점:
+- case 의존성이 있으며 항상 RNG보다 우수한 것은 아님.
+
+---------------------------------------------------------------------
+3.4 transportProperties
+---------------------------------------------------------------------
+
+비압축성 Newtonian 유체의 대표 예:
+
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    object      transportProperties;
+}
+
+transportModel  Newtonian;
+
+nu              [0 2 -1 0 0 0 0] 1.5e-05;
+
+여기서 nu는 동점성계수 [m2/s].
+
+공기의 경우 온도에 따라 달라진다.
+사용한 값의 출처 또는 온도조건을 기록하여 불편한 리눅스에서 다시 찾지 않도록 하는 것이 좋다.
+
+=====================================================================
+PART 4. system/controlDict
+=====================================================================
+
+controlDict는 계산 시간진행과 출력 제어의 중심 파일이다.
+
+---------------------------------------------------------------------
+4.1 nano용 controlDict 템플릿
+---------------------------------------------------------------------
+
+    nano system/controlDict
+
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+
+application     pimpleFoam;
+
+startFrom       latestTime;
+startTime       0;
+stopAt          endTime;
+endTime         40;
+
+deltaT          0.001;
+
+writeControl    adjustableRunTime;
+writeInterval   0.5;
+
+purgeWrite      0;
+writeFormat     ascii;
+writePrecision  10;
+writeCompression off;
+
+timeFormat      general;
+timePrecision   16;
+
+runTimeModifiable true;
+
+adjustTimeStep  yes;
+maxCo           1.5;
+maxDeltaT       0.002;
+
+functions
+{
+    // 필요한 functionObject를 여기에 정의
+}
+
+---------------------------------------------------------------------
+4.2 주요 항목 의미
+---------------------------------------------------------------------
+
+application
+- 실행 solver.
+- 예: pimpleFoam
+
+startFrom
+- startTime
+- firstTime
+- latestTime
+
+restart 시 보통:
+
+    startFrom latestTime;
+
+endTime
+- 계산 종료 physical time.
+
+adjustTimeStep yes
+- Courant number 기준으로 deltaT를 자동 조정.
+
+maxCo
+- 허용 최대 Courant number.
+
+maxDeltaT
+- adaptive time step이 아무리 커져도 넘지 못하는 상한.
+
+writeInterval
+- 결과 저장 간격.
+- 너무 짧으면 파일 수와 저장공간이 급증.
+
+purgeWrite
+- 0이면 저장 결과를 지우지 않음.
+- 양수이면 최근 지정 개수만 유지하므로 주의.
+
+timePrecision
+- 긴 소수 time directory 이름을 정확하게 처리해야 할 때 중요.
+- restart 오류를 피하기 위해 충분히 크게 둘 수 있다.
+
+=====================================================================
+PART 5. Courant Number와 시간간격
+=====================================================================
+
+Courant number의 기본 개념:
+
+    Co = U * deltaT / deltaX
+
+의미:
+한 time step 동안 정보가 셀 크기에 비해 얼마나 이동하는가.
+
+Co가 작다:
+- time resolution 향상
+- 일반적으로 수치 안정성 향상
+- 계산시간 증가
+
+Co가 크다:
+- time step 증가
+- 계산 빨라짐
+- 비선형 결합 및 대류항에서 불안정 가능성 증가
+
+주의:
+"Co가 폭발했다"고 해서 항상 Co가 최초 원인이라는 뜻은 아니다.
+U가 먼저 발산 -> 국소 속도 폭증 -> Co 폭증일 수도 있다.
+
+따라서 발산 분석 시 순서를 본다.
+
+예:
+
+1. U residual 증가
+2. pressure residual 증가
+3. k/epsilon iteration 증가
+4. velocity field 폭주
+5. Co max 폭증
+6. deltaT 급락
+7. FPE
+
+이 경우 Co 폭증은 결과에 가깝다.
+
+하지만 maxCo를 낮추면 동일 비선형 상태에서 한 step의 변화량이 줄어
+발산을 방지할 수 있다.
+
+=====================================================================
+PART 6. system/fvSchemes
+=====================================================================
+
+fvSchemes는 미분항을 어떤 수치기법으로 이산화할지 정한다.
+
+주요 항목:
+
+ddtSchemes          시간미분
+gradSchemes         gradient
+divSchemes          divergence / convection
+laplacianSchemes    diffusion
+interpolationSchemes face interpolation
+snGradSchemes       surface-normal gradient
+
+---------------------------------------------------------------------
+6.1 nano용 fvSchemes 예시
+---------------------------------------------------------------------
+
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    object      fvSchemes;
+}
+
+ddtSchemes
+{
+    default         Euler;
+}
+
+gradSchemes
+{
+    default         Gauss linear;
+    grad(U)         Gauss linear;
+}
+
+divSchemes
+{
+    default                         none;
+    div(phi,U)                      Gauss linearUpwind grad(U);
+    div(phi,k)                      Gauss upwind;
+    div(phi,epsilon)                Gauss upwind;
+    div(phi,C)                      Gauss upwind;
+    div((nuEff*dev2(T(grad(U)))))   Gauss linear;
+}
+
+laplacianSchemes
+{
+    default         Gauss linear corrected;
+}
+
+interpolationSchemes
+{
+    default         linear;
+}
+
+snGradSchemes
+{
+    default         corrected;
+}
+
+---------------------------------------------------------------------
+6.2 upwind
+---------------------------------------------------------------------
+
+장점:
+- 매우 robust.
+- 발산 억제에 유리.
+- 강한 convection에서도 안정적.
+
+단점:
+- 1차 정확도.
+- numerical diffusion 큼.
+- jet, shear layer, scalar front를 지나치게 퍼뜨릴 수 있음.
+
+사용 예:
+
+    div(phi,k) Gauss upwind;
+
+---------------------------------------------------------------------
+6.3 linearUpwind
+---------------------------------------------------------------------
+
+장점:
+- upwind보다 높은 정확도.
+- numerical diffusion 감소.
+- velocity gradient를 더 선명하게 유지.
+
+단점:
+- upwind보다 불안정할 수 있음.
+- mesh quality가 좋지 않거나 Co가 크면 oscillation/발산 가능.
+
+예:
+
+    div(phi,U) Gauss linearUpwind grad(U);
+
+실전 판단:
+정확도와 안정성의 타협이다.
+발산 시 무조건 solver를 바꾸기 전에
+Co, mesh, boundary condition과 함께 convection scheme을 점검한다.
+
+---------------------------------------------------------------------
+6.4 limitedLinear 계열
+---------------------------------------------------------------------
+
+linear과 upwind 사이의 타협.
+고차 정확도를 어느 정도 유지하면서 limiter로 overshoot를 억제.
+
+장점:
+- linear보다 robust.
+- upwind보다 덜 diffusive할 수 있음.
+
+단점:
+- limiter 계수 선택이 필요.
+- case에 따라 결과가 민감.
+
+---------------------------------------------------------------------
+6.5 Gauss linear corrected
+---------------------------------------------------------------------
+
+비직교(non-orthogonal) mesh에서 laplacian 계산 시 correction을 포함.
+
+장점:
+- 일반적인 비정렬 mesh에서 정확도 향상.
+
+단점:
+- non-orthogonality가 매우 크면 correction 자체가 불안정성을 키울 수 있음.
+
+mesh 품질이 나쁠수록 limited correction을 검토할 수 있다.
+
+=====================================================================
+PART 7. system/fvSolution
+=====================================================================
+
+fvSolution은 "방정식을 어떤 선형 solver로, 어느 정도까지 풀 것인가"를 정한다.
+
+---------------------------------------------------------------------
+7.1 nano용 fvSolution 예시
+---------------------------------------------------------------------
+
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        tolerance       1e-7;
+        relTol          0.05;
+        smoother        GaussSeidel;
+    }
+
+    pFinal
+    {
+        $p;
+        relTol          0;
+    }
+
+    U
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-6;
+        relTol          0.1;
+    }
+
+    UFinal
+    {
+        $U;
+        relTol          0;
+    }
+
+    k
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-6;
+        relTol          0.1;
+    }
+
+    kFinal
+    {
+        $k;
+        relTol          0;
+    }
+
+    epsilon
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-6;
+        relTol          0.1;
+    }
+
+    epsilonFinal
+    {
+        $epsilon;
+        relTol          0;
+    }
+
+    C
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-7;
+        relTol          0.1;
+    }
+}
+
+PIMPLE
+{
+    momentumPredictor           yes;
+    nOuterCorrectors            2;
+    nCorrectors                 2;
+    nNonOrthogonalCorrectors    1;
+
+    pRefCell                    0;
+    pRefValue                   0;
+}
+
+relaxationFactors
+{
+    equations
+    {
+        U           0.7;
+        k           0.7;
+        epsilon     0.7;
+    }
+}
+
+---------------------------------------------------------------------
+7.2 GAMG
+---------------------------------------------------------------------
+
+GAMG = Geometric-Algebraic Multi-Grid.
+pressure equation처럼 큰 선형계에 매우 효율적인 경우가 많다.
+
+개념:
+fine grid 문제를 coarse representation에서도 풀어
+저주파 error를 빠르게 제거.
+
+장점:
+- 대규모 pressure solve에 효율적.
+
+단점:
+- mesh/설정에 따라 convergence 특성이 민감할 수 있음.
+
+---------------------------------------------------------------------
+7.3 smoothSolver
+---------------------------------------------------------------------
+
+반복형 선형 solver.
+GaussSeidel, symGaussSeidel 같은 smoother와 함께 사용.
+
+U, k, epsilon 등에서 흔히 사용.
+
+---------------------------------------------------------------------
+7.4 tolerance / relTol
+---------------------------------------------------------------------
+
+tolerance
+- 절대 residual 기준.
+
+relTol
+- 초기 residual 대비 얼마나 감소하면 중단할지.
+
+예:
+
+    tolerance 1e-6;
+    relTol    0.1;
+
+초기 residual이 1e-3이면 1e-4까지 감소하면 relTol 조건을 만족할 수 있다.
+단, absolute tolerance와 함께 판단된다.
+
+Final solver에서:
+
+    relTol 0;
+
+로 두는 이유는 최종 correction에서 상대기준으로 일찍 멈추지 않고
+absolute tolerance까지 더 엄격히 풀기 위함이다.
+
+---------------------------------------------------------------------
+7.5 residual 읽는 법
+---------------------------------------------------------------------
+
+예:
+
+    Initial residual = 1.0e-4
+    Final residual   = 1.0e-7
+    No Iterations    = 1
+
+해석:
+- 이전 단계와 현재 방정식 사이의 불일치가 1e-4 수준에서 시작.
+- solver 1회 반복 후 1e-7 수준까지 감소.
+- 매우 안정적인 패턴일 수 있음.
+
+위험 신호:
+
+- Initial residual이 갑자기 0.1 -> 0.9 -> 1에 접근
+- iteration 수가 수십, 수백, 1000으로 증가
+- Final residual이 충분히 감소하지 않음
+- 여러 field가 동시에 악화
+
+주의:
+residual이 작다고 물리적으로 정답이라는 뜻은 아니다.
+그 time step 내 선형방정식이 잘 풀렸다는 의미에 더 가깝다.
+
+=====================================================================
+PART 8. SIMPLE / PISO / PIMPLE
+=====================================================================
+
+SIMPLE
+- 주로 steady-state.
+- pressure-velocity correction 반복.
+
+PISO
+- transient에서 한 time step 내 여러 pressure correction.
+
+PIMPLE
+- PISO + SIMPLE 성격 결합.
+- transient에서 outer iteration을 추가.
+- 큰 time step 또는 강한 비선형 coupling에 유리할 수 있음.
+
+---------------------------------------------------------------------
+8.1 PIMPLE 주요 변수
+---------------------------------------------------------------------
+
+nOuterCorrectors
+- 한 time step 안에서 전체 U-p coupling loop를 몇 번 돌지.
+
+nCorrectors
+- 각 outer loop 안에서 pressure correction 횟수.
+
+nNonOrthogonalCorrectors
+- non-orthogonal mesh 보정을 위한 pressure correction.
+
+예:
+
+    nOuterCorrectors 2;
+    nCorrectors 2;
+    nNonOrthogonalCorrectors 1;
+
+nOuterCorrectors 증가 시:
+장점:
+- 같은 time step에서 더 강하게 nonlinear coupling 수렴.
+- 어려운 transient 문제 안정성 향상 가능.
+
+단점:
+- timestep당 계산비용 증가.
+- 너무 큰 dt, 나쁜 mesh, 잘못된 BC를 근본적으로 해결하지는 못함.
+
+따라서 발산 시 무조건 outer corrector부터 늘리지 않는다.
+원인을 한 변수씩 분리해서 확인한다.
+
+=====================================================================
+PART 9. Relaxation Factor
+=====================================================================
+
+under-relaxation의 개념:
+새 계산값을 한 번에 100% 적용하지 않고 일부만 반영.
+
+개념식:
+
+    phi_new_used = phi_old + alpha*(phi_new_calculated - phi_old)
+
+alpha = 1.0
+- 계산된 새 값을 그대로 반영.
+
+alpha = 0.7
+- 변화량의 70%만 반영.
+
+alpha가 작을수록:
+- 안정성 증가 가능
+- convergence 느려짐
+
+alpha가 너무 크면:
+- oscillation / divergence 가능
+
+alpha가 너무 작으면:
+- 지나치게 느린 수렴
+- 비정상 계산에서 물리적 time accuracy에도 주의 필요
+
+예:
+
+    relaxationFactors
+    {
+        equations
+        {
+            U       0.7;
+            k       0.7;
+            epsilon 0.7;
+        }
+    }
+
+=====================================================================
+PART 10. Pressure residual과 continuity error
+=====================================================================
+
+Pressure initial residual이 다른 변수보다 크게 보이는 경우가 흔하다.
+특히 PIMPLE의 pressure correction 구조에서는
+initial residual 자체보다 correction 후 얼마나 감소하는지가 중요하다.
+
+예:
+
+    p Initial residual = 0.36
+      Final residual   = 0.010
+
+다음 correction:
+
+    p Initial residual = 0.016
+      Final residual   = 0.0004
+
+마지막 correction:
+
+    p Initial residual = 0.00028
+      Final residual   = 8e-8
+
+이 경우 첫 initial residual이 0.36이라고 해서 즉시 문제라고 볼 수 없다.
+최종 correction과 continuity error를 함께 봐야 한다.
+
+continuity error 예:
+
+    sum local = 1e-12
+    global    = 1e-14
+
+매우 작은 값이면 mass conservation 관점에서 안정적 신호다.
+
+주의:
+cumulative continuity error가 지속적으로 큰 방향으로 누적되는지 확인한다.
+
+=====================================================================
+PART 11. bounding k / bounding epsilon
+=====================================================================
+
+난류모델의 k와 epsilon은 물리적으로 음수가 될 수 없다.
+하지만 수치 이산화 과정에서 일부 셀에서 일시적으로 음수가 계산될 수 있다.
+OpenFOAM은 이를 허용 가능한 최소값으로 제한(bounding)한다.
+
+예:
+
+    bounding epsilon, min: -0.02 max: 420 average: 1.5
+
+이 메시지가 한 번 나왔다고 바로 발산은 아니다.
+
+판단할 것:
+
+1. min 음수값의 magnitude가 커지는가?
+2. 발생 cell 수가 늘어나는가?
+3. epsilon residual이 악화되는가?
+4. k도 동시에 악화되는가?
+5. U/p/Co도 동시에 흔들리는가?
+
+작은 음수가 반복되더라도
+residual이 1~몇 iteration에 안정적으로 감소하고
+max/average가 폭증하지 않으면 국소적인 수치 clipping일 수 있다.
+
+위험한 경우:
+
+- epsilon/k max가 수십 자릿수로 폭증
+- residual ~ 1
+- iteration 1000
+- Co 폭증
+- deltaT 붕괴
+
+=====================================================================
+PART 12. Mesh 생성 개념
+=====================================================================
+
+대표적인 workflow:
+
+1. blockMesh
+2. surfaceFeatureExtract (필요 시)
+3. snappyHexMesh
+4. checkMesh
+5. 필요 시 mesh refinement 수정 후 반복
+
+---------------------------------------------------------------------
+12.1 blockMesh
+---------------------------------------------------------------------
+
+단순한 구조 격자 또는 snappyHexMesh의 background mesh 생성.
+
+명령:
+
+    blockMesh
+
+입력:
+
+    system/blockMeshDict
+
+---------------------------------------------------------------------
+12.2 snappyHexMesh
+---------------------------------------------------------------------
+
+STL 등의 geometry를 기반으로 background mesh를 잘라내고,
+표면에 snap시키고 필요하면 boundary layer를 추가.
+
+주요 단계:
+
+castellatedMesh
+- geometry 주변 cell 분할/refinement.
+
+snap
+- cell boundary를 실제 surface에 맞춤.
+
+addLayers
+- 벽면 layer 추가.
+
+명령 예:
+
+    snappyHexMesh -overwrite
+
+주의:
+이 명령은 mesh를 변경하므로 기존 polyMesh를 덮어쓸 수 있다.
+실행 전 백업 또는 case 복제를 권장.
+
+---------------------------------------------------------------------
+12.3 refinement level
+---------------------------------------------------------------------
+
+snappyHexMesh의 level이 한 단계 증가하면
+해당 cell의 각 방향 크기가 대략 절반으로 세분될 수 있다.
+3D에서는 해당 영역 cell 수가 크게 증가할 수 있다.
+
+따라서 level 1 -> 2 -> 3이 단순히 전체 cell 수 1배 -> 2배 -> 3배가 아니다!
+
+논문/보고서에서는 mesh를 보통:
+
+Coarse
+Medium
+Fine
+
+으로 구분하고 실제 cell 수를 함께 기재한다.
+
+=====================================================================
+PART 13. Mesh 품질 지표
+=====================================================================
+
+checkMesh 기본:
+
+    checkMesh
+
+상세 검사:
+
+    checkMesh -allGeometry -allTopology
+
+주요 지표:
+
+non-orthogonality
+- cell 중심 연결선과 face normal의 정렬 정도.
+- 클수록 diffusion/pressure discretization에 어려움.
+
+skewness
+- face center와 이상적인 interpolation 위치의 어긋남.
+- 높을수록 gradient/interpolation error 증가.
+
+aspect ratio
+- 셀 길이비.
+- 지나치게 큰 값은 조건수와 해상도에 악영향 가능.
+
+concave cell/face
+- 기하학적으로 오목한 요소.
+- 일부는 허용될 수 있으나 국소 수치 불안정 가능.
+
+negative volume / illegal topology
+- 심각한 오류.
+- 일반적으로 해석 전 반드시 해결해야 한다.
+
+중요:
+총 cell 수가 많다고 좋은 mesh가 아니다.
+중요한 shear layer, jet, wall, recirculation region의 local resolution이 중요하다.
+
+=====================================================================
+PART 14. Grid Independence / Mesh Sensitivity
+=====================================================================
+
+가장 일반적인 표기:
+
+Coarse mesh
+Medium mesh
+Fine mesh
+
+대표조건 하나를 정해 세 mesh에서 같은 output을 비교한다.
+
+예:
+
+- 공간평균 C
+- 특정 시간의 C_avg
+- outlet flow rate
+- 특정 probe velocity
+- pressure drop
+- ventilation efficiency
+
+상대차 예:
+
+    error(%) = |Medium - Fine| / |Fine| * 100
+
+
+=====================================================================
+PART 15. decomposeParDict
+=====================================================================
+
+병렬 계산용 domain decomposition 설정.
+
+nano 템플릿:
+
+    nano system/decomposeParDict
+
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    object      decomposeParDict;
+}
+
+numberOfSubdomains 12;
+
+method          scotch;
+
+scotchCoeffs
+{
+}
+
+
+병렬 분할:
+
+    decomposePar
+
+이 명령은 processor* 폴더를 생성/변경한다.
+실행 전 현재 case와 processor 폴더 상태 확인.
+
+=====================================================================
+PART 16. 기본 OpenFOAM 명령어 사전
+=====================================================================
+
+[읽기/검사 중심]
+
+    pwd
+    ls
+    ls -ltr
+    cat FILE
+    less FILE
+    grep PATTERN FILE
+    checkMesh
+    checkMesh -allGeometry -allTopology
+    foamListTimes
+    foamListTimes -processor -latestTime
+
+[mesh 생성/변경]
+
+    blockMesh
+    snappyHexMesh -overwrite
+
+주의: mesh 변경 가능.
+
+[병렬]
+
+    decomposePar
+    reconstructPar
+
+주의: processor 또는 reconstruct 결과 파일 생성/변경.
+
+[solver]
+
+    pimpleFoam
+    simpleFoam
+
+클러스터에서는 직접 login node에서 실행하지 말 것.
+
+[설정 조회]
+
+    foamDictionary system/controlDict -entry maxCo
+
+[설정 변경]
+
+    foamDictionary system/controlDict -entry maxCo -set 1.5
+
+주의: 파일을 실제로 수정한다.
+
+=====================================================================
+PART 17. Restart 기본 원리
+=====================================================================
+
+restart 전에 확인:
+
+    pwd
+    foamListTimes -processor -latestTime
+    grep -E "startFrom|endTime|maxCo|maxDeltaT|timePrecision" system/controlDict
+
+restart 설정의 핵심:
+
+    startFrom latestTime;
+
+processor 폴더가 이미 올바른 decomposition 상태이고
+최신 time이 정상 저장되어 있다면 재분할이 필요하지 않을 수 있다.
+
+하지만 core 수 또는 numberOfSubdomains를 바꾸면
+일반적으로 reconstruct -> 기존 processor 백업 -> decompose를 다시 해야 한다.
+백업을 꼭하자 나중에 터졌을때 복붙하기 참 편하다.
+
+=====================================================================
+PART 18. 발산 진단 순서
+=====================================================================
+
+CFD가 터졌을 때 한 번에 여러 항목을 바꾸지 않는다.
+원인을 구분할 수 없게 된다.
+
+권장 순서:
+
+1. 마지막 정상 time 확인
+2. U residual이 최초로 흔들렸는지 확인
+3. pressure residual 추적
+4. k/epsilon residual 및 bounding 확인
+5. Co 변화 확인
+6. deltaT 변화 확인
+7. mesh warning 확인
+8. boundary condition 점검
+9. scheme 점검
+10. solver/PIMPLE/relaxation 점검
+11. decomposition/core count 영향 검토
+
+가능한 수정 예:
+
+A. maxCo 낮추기
+B. maxDeltaT 낮추기
+C. 수치해석 scheme을 안정적인걸로 변경 (2차정확도)
+D. nOuterCorrectors 증가 (iteration을 더 많이)
+E. relaxation 강화
+F. problematic mesh 개선 - 가끔 checkMesh만으로는 안나오는 나쁜 셀들이 있음 
+G. core/decomposition 변경 - decomposePar 할때 뭔 알고리즘인지는 모르겠지만 아무튼 이놈이 쪼갠부분에서 이상한 거동(예 불연속면)이 나오면 얘네가 정신을 못차림
+
+한 번에 하나씩 바꿔야 어떤 변화가 효과가 있었는지 알 수 있으나
+로그를 보면 조금의 힌트를 얻을 수가 있다.
+
+=====================================================================
+PART 19. 대표적인 발산 로그 패턴
+=====================================================================
+
+정상 예:
+
+    U Initial residual ~ 1e-4
+    Final residual ~ 1e-7
+    Iterations 1~몇 회
+
+    epsilon Initial residual ~ 1e-5
+    Final residual ~ 1e-8
+    Iterations 1
+
+    k Initial residual ~ 1e-4
+    Final residual ~ 1e-7
+    Iterations 1
+
+    Co max = 설정값 근처에서 안정
+    deltaT 거의 일정 또는 부드럽게 변화
+
+위험 예:
+
+    U Initial residual -> 0.5, 0.9, 0.999
+    k/epsilon -> residual ~ 1
+    Iterations -> 1000
+    k/epsilon max -> 비정상적으로 폭증
+    Courant max -> 수천~수백만
+    deltaT -> 1e-10, 1e-20 ...
+    Floating point exception
+
+FPE는 원인 그 자체가 아니라
+이미 물리량이 NaN/Inf 또는 불가능한 범위로 폭주한 마지막 결과일 수 있다.
+
+=====================================================================
+PART 20. MPI와 solver crash 구분
+=====================================================================
+
+예:
+
+    mpirun noticed that process rank 9 exited on signal 8
+    Floating point exception
+
+
+한 rank의 OpenFOAM process가 FPE로 죽었고,
+MPI가 병렬 job 전체를 종료시킨 것이다.
+
+즉 문제는 OpenFOAM field/solver 쪽에 있을 수 있다.
+항상 느끼지만 컴퓨터는 죄가없다
+내가 죄인이다
+=====================================================================
+PART 21. 병렬 core 수가 결과 안정성에 영향을 줄 수 있는 이유
+=====================================================================
+
+이론적으로 같은 discretization이면 같은 해로 수렴해야 한다.
+그러나 비선형 CFD가 수치적으로 marginal한 상태에서는
+다음이 작은 차이를 만들 수 있다고 한다.
+
+- domain decomposition interface 위치
+- floating-point reduction 순서
+- iterative solver communication 순서
+- round-off error
+
+따라서 8 core에서 터지고 4 core에서 안 터지는 상황은 가능하다.
+
+하지만 core 수 감소를 근본 해결책으로 단정하면 안 된다.
+우선 Co, mesh, scheme, BC, solver setting을 머리가 빠지도록 점검하도록 하자
+
+=====================================================================
+PART 22. Passive Scalar 해석의 핵심
+=====================================================================
+
+C가 단순 무차원 오염물 농도라고 하면:
+
+초기 실내:
+
+    C = 1
+
+fresh air inlet:
+
+    C = 0
+
+시간에 따라 room-average C가 감소하면 환기가 진행되는 것이다.
+
+주의:
+scalar transport equation에는 물리적/유효 diffusivity 설정이 필요하다.
+단순히 U field에 C만 추가했다고 자동으로 모든 physics가 구성되는 것은 아니다.
+
+C 해석 결과로 볼 수 있는 지표:
+
+- room-average C(t)
+- 특정 probe C(t)
+- C/C0
+- t50: 초기농도의 50% 도달시간
+- t90 또는 C/C0=0.1 도달시간
+- 공간별 잔류오염 영역
+
+=====================================================================
+PART 23. Pulsating inlet 해석 개념
+=====================================================================
+
+대표 형태:
+
+    U(t) = Vm + A sin(2*pi*f*t)
+
+Vm = 평균속도
+A  = 진폭
+f  = 주파수
+
+A < Vm 이면:
+
+    Umin = Vm - A > 0
+
+즉 유동이 완전히 0으로 끊기지 않고 항상 양의 기본 환기유량 유지.
+
+주파수 비교 시 Strouhal number 사용 가능:
+
+    St = f L / U
+
+L은 문제에 적합한 characteristic length.
+덕트 직경 D를 쓰면:
+
+    St = f D / U
+
+절대 Hz만 비교하는 것보다 유속/길이척도까지 포함하여 해석할 수 있다.
+
+=====================================================================
+PART 24. 동일 평균 이상 유체동력 비교
+=====================================================================
+
+이상적인 kinetic-energy flux 기준:
+
+    P ~ 1/2 rho A U^3
+
+sinusoidal velocity:
+
+    U(t) = Vm + A sin(wt)
+
+한 주기 평균:
+
+    <U^3> = Vm^3 + (3/2) Vm A^2
+
+따라서 pulsating 조건 사이에
+
+    Vm^3 + 1.5 Vm A^2
+
+를 동일하게 맞추면
+이상적인 시간평균 kinetic-energy flux를 유사하게 비교할 수 있다.
+
+주의:
+실제 blower 전력과 정확히 동일하다는 뜻이 아니다.
+실제 시스템에는 효율, 압력손실, 관성, 모터특성 등이 포함된다.
+
+=====================================================================
+PART 25. y+와 wall function 기본
+=====================================================================
+
+y+는 벽면 첫 셀의 무차원 거리.
+모른다면 응용유체역학을 듣고오자 
+ㅅㅇㄱ교수님의 응용유체역학은 정말 많은 도움이 되었다.
+
+개념:
+
+    y+ = u_tau * y / nu
+
+wall function을 사용할 때는
+첫 셀이 어떤 벽영역에 위치하는지가 중요하다.
+
+주의:
+"좋은 y+ 하나"가 모든 turbulence model과 mesh strategy에 공통인 것은 아니다.
+사용한 wall treatment와 turbulence model에 맞춰 판단한다.
+
+보고서에는 가능하면 y+ 분포 또는 범위를 제시한다.
+
+=====================================================================
+PART 26. Scheme 선택 요약
+=====================================================================
+
+Upwind
+- 안정성: 높음
+- 정확도: 낮음(1차)
+- numerical diffusion: 큼
+- 발산 위험이 높은 k, epsilon, scalar 등에 자주 사용
+
+Linear
+- 안정성: 상대적으로 낮음
+- 정확도: 높음
+- unbounded 가능성 존재
+
+LinearUpwind
+- upwind보다 정확
+- gradient 사용
+- mesh/Co에 따라 민감
+- velocity convection에 자주 사용
+
+LimitedLinear
+- 정확도와 boundedness 사이 절충
+- limiter 설정 필요
+
+Corrected laplacian
+- non-orthogonality correction 포함
+- 일반 unstructured mesh에 흔함
+
+=====================================================================
+PART 27. Solver 설정을 바꿀 때 질문해야 할 것
+=====================================================================
+
+1. 내가 바꾸려는 변수는 무엇을 제어하는가?
+2. 정확도를 바꾸는가, 안정성을 바꾸는가, 둘 다인가?
+3. 계산비용은 얼마나 증가하는가?
+4. 물리모델 자체가 바뀌는가?
+5. 같은 결과 비교가 여전히 공정한가?
+6. 한 번에 하나의 변수만 바꾸고 있는가?
+7. 변경 전 설정을 기록했는가?
+
+=====================================================================
+PART 28. nano 편집용 빠른 템플릿 목록
+=====================================================================
+
+자주 열 파일:
+
+    nano system/controlDict
+    nano system/fvSchemes
+    nano system/fvSolution
+    nano system/decomposeParDict
+
+    nano constant/turbulenceProperties
+    nano constant/transportProperties
+
+    nano 0/U
+    nano 0/p
+    nano 0/k
+    nano 0/epsilon
+    nano 0/nut
+    nano 0/C
+
+추천 방식:
+
+1. 검증된 기존 case 복사
+2. 위 파일들을 하나씩 열어 diff처럼 비교
+3. geometry/patch 이름 확인
+4. 수정 후 grep/cat으로 재검증
+5. checkMesh
+6. 짧은 test run
+7. production run
+
+=====================================================================
+PART 29. 처음부터 case를 만들 때 최소 체크리스트
+=====================================================================
+
+[0/]
+□ U 존재
+□ p 존재
+□ turbulence model에 필요한 k/epsilon/nut 존재
+□ scalar 사용 시 C 존재
+□ patch 이름이 constant/polyMesh/boundary와 정확히 일치
+□ dimensions 확인
+□ internalField 확인
+□ inlet/outlet/wall BC 확인
+
+[constant/]
+□ transportProperties
+□ turbulenceProperties
+□ polyMesh
+□ 물성값 단위 확인
+
+[system/]
+□ controlDict
+□ fvSchemes
+□ fvSolution
+□ decomposeParDict
+□ blockMeshDict 또는 snappyHexMeshDict
+
+[실행 전]
+□ checkMesh
+□ application 확인
+□ maxCo/maxDeltaT 확인
+□ writeInterval 확인
+□ endTime 확인
+□ processor 수 확인
+□ case directory 확인
+
+개인적인 추천은 본인 케이스와 비슷한 케이스를 포럼이나 깃헙에서 열심히 찾는다
+정 없다면 튜토리얼 파일을 잡아뜯는것이 편하다.
+전체를 복사하면 위험하므로 귀찮더라도 cp /~ 하여 각각의 파일만 옮기는걸 추천한다.
+
+이상한거 다운받지 않기 위해 본인이 다운하려는 안전한 환경에서 확인하고 (스크립트 내용보기 등)
+다운받도록 하자
+
+=====================================================================
+PART 30. 보고서에서 꼭 기록해야 할 OpenFOAM 정보 
+=====================================================================
+
+- OpenFOAM version
+- solver
+- steady/transient 여부
+- turbulence model
+- 주요 fluid property
+- geometry/mesh cell 수
+- mesh quality
+- grid sensitivity 여부
+- boundary conditions
+- inlet velocity/turbulence values
+- time step control
+- maxCo
+- discretization schemes
+- pressure-velocity coupling
+- convergence/residual 기준
+- simulation physical time
+- parallel processor 수(필요 시)
+- scalar diffusivity
+- output metric 정의
+
+나도 다시 봐야될수도 있고 재현성을 위해 공개하도록 하자
+
+=====================================================================
+PART 31. 실전 Troubleshooting 빠른 표
+=====================================================================
+
+증상: Co가 갑자기 폭증
+가능 원인:
+- U field 발산
+- dt 과대
+- 국소 mesh 문제
+- convection instability
+확인:
+- 폭증 직전 U residual
+- deltaT
+- k/epsilon
+해결방안 1: 급하다고 maxCo를 공격적으로 잡으면 안된다. maxCo를 낮춰보자
+
+증상: k/epsilon 1000 iterations
+가능 원인:
+- turbulence field divergence
+- mesh/BC 문제 -> 이 문제의 경우 아마 확실치는 않지만 decomposePar 을 하게되면서 쪼개진 경계면에서 그라디언트가 급격히 변화하거나 혹은 충격파와 같이 불연속면이 있으면 발생할 수 있는것같다. (추정)
+- U field 불안정 전이
+확인:
+- U가 먼저 흔들렸는지 확인해보고 맞다면 보통 Courant수가 그 이후 폭증했을 것이다.
+
+증상: pressure initial residual 가 크게 나옴
+가능 원인:
+- 오류가 아닐수도 있다
+확인:
+- correction 후 최종 residual이 발산하는지 지켜보아라
+- continuity error 문제
+
+증상: epsilon bounding 반복
+가능 원인:
+- 일부 셀에서 음수 overshoot
+확인:
+- magnitude 증가 여부
+- k/epsilon max/average
+- residual 악화 여부
+나는 왜인지 모르게 자주 있었다....공부해야되는데 알아볼 방법이 없다....미칠거같다 
+
+증상: FPE
+가능 원인:
+- NaN/Inf -> 음수에 루트 씌우거나 그러면 이럼
+- 0 나누기
+- turbulence field 폭주
+- invalid physical state
+확인:
+- FPE 직전 20~100 lines
+
+=====================================================================
+PART 32. OpenFOAM을 공부할 때 가장 중요한 관점
+=====================================================================
+
+OpenFOAM에서 중요한 것은 "어떤 명령어를 치는가"보다
+"그 명령어와 dictionary가 어떤 방정식과 수치과정을 제어하는가"를 아는 것이다.
+솔직히 하나하나 제대로 알고 싶은 마음은 굴뚝같으나 그렇게되면 해석하기 전에 지구가 멸망할지도 모른다.
+
+예를 들어
+
+maxCo를 낮춘다
+= 단순히 숫자를 줄이는 것이 아니라
+  한 timestep 동안 정보가 cell을 지나가는 비율을 제한한다. -> 안정적이지만 느리게 혹은 공격적으로 빠르게
+
+upwind를 쓴다
+= 단순히 안정한 scheme이지만 수치적 확산의 가능성이 있다.
+(사실 나도 수치적 확산이 뭔지는 정의를 몬하겠음): 비유를 들자면 [0 1 1 2 1 1 0 0 0] 이 있엇으면 [0 1 1.3 1.8 1.5 1.2 1 0.6 0] 이런느낌?
+
+nOuterCorrectors를 늘린다
+= residual을 억지로 맞추는 것이 아니라
+  같은 timestep 안에서 nonlinear pressure-velocity-turbulence coupling을
+  더 많이 반복한다. 즉 시간을 버리고 정신건강을 취하는 것이다 하지만 둘다 버릴수도 있다.
+
+relaxation factor를 변경한다.
+모르면 수치해석 듣고와라 ㄱㅂㅈ교수님의 수치해석은 명강의다. 
+메트랩을 배우기보단 수치해석 이론을 배우도록 하자
+
+k와 epsilon을 푼다
+= 난류를 직접 해상하는 것이 아니라
+  RANS 행렬을 닫기위해 위한 난류 에너지와 소산 정보를 모델링한다.
+
+=====================================================================
+PART 33. 공유할 때 주의할 점
+=====================================================================
+
+공개용 문서/예제에서 다음은 제거 또는 placeholder 처리를 추천한다.
+
+- 실제 사용자 계정명
+- 절대 home path
+- 특정 클러스터 node 이름
+- 내부 partition 이름
+- 기관 내부 module path
+- 개인 job ID
+
+예:
+
+    <CASE_DIR>
+    <OPENFOAM_BASHRC>
+    <MPI_MODULE>
+    <PARTITION>
+    <NODE>
+    <N_TASKS>
+
+
+=====================================================================
+PART 34. 클래스 정리 및 용어 정리
+=====================================================================
+
+0/
+= 물리장 + 초기조건 + 경계조건
+
+constant/
+= 물성 + turbulence model + mesh
+
+system/controlDict
+= 언제부터 언제까지, dt, Co, 저장
+
+system/fvSchemes
+= 미분항을 어떻게 이산화할지
+
+system/fvSolution
+= 방정식을 어떤 solver로 얼마나 풀지
+
+system/decomposeParDict
+= 병렬 domain 분할
+
+U
+= 속도
+
+p
+= 압력 관련 field
+
+k
+= 난류 운동에너지
+
+epsilon
+= 난류 소산률
+
+nut
+= 난류 동점성
+
+C
+= passive scalar
+
+checkMesh
+= mesh 품질 검사
+
+Co
+= timestep 안정성의 핵심 지표 중 하나
+
+PIMPLE
+= transient pressure-velocity coupling
+
+residual
+= 해당 반복에서 방정식 불일치의 감소 정도
+
+bounding
+= 물리적으로 불가능한 음수값 등을 수치적으로 제한
+
+발산 시
+= 한 번에 하나씩 바꾸고 로그에서 최초 이상 신호를 찾는다.
+
+=====================================================================
+- 이 파일을 그대로 보관하고 case를 만들 때 옆에 띄워둔다.
+- 새 case는 검증된 base case를 복사한 뒤 이 문서와 비교한다.
+- nano 템플릿은 patch 이름, 물성, turbulence 값, solver 버전에 맞게 수정한다.
+- 실제 계산 전에는 OpenFOAM 버전별 문법 차이를 확인한다.
+=====================================================================
