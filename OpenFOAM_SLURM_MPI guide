@@ -1855,7 +1855,7 @@ command not found
 원인
 
 OpenFOAM 환경이 로드되지 않음
-MPI module이 로드되지 않음
+MPI module이 로드되지 않음 -> 터미널을 열고 로드하지 않은경우 자주 발생
 철자 오류
 
 
@@ -2029,10 +2029,10 @@ Courant Number, deltaT, residual 확인
 저장된 time 확인 - 병렬계산을 사용하지 않을 때
 
 15-1.
-병렬계산시에는 constructPar을 해줘야 한다.
+병렬계산시에는 reconstructPar을 해줘야 한다.
 
 + 만약 중간에 계산을 멈췄다가 한 경우 저장된 지점이 두개로 나눠지면 constructPar를 했을때 같이 안되는 경우가 있다 (주로 numberOfSubdmains가 다를 떄)
-이때는 각각의 파일을 따로 constructPar을 해주어야 하며 mkdir로 임시 파일을 생성후에 0 constrol 파일을 옮겨서 conPar 후에 계산된 tstep을 옮겨주면된다. 화이팅!
+이때는 각각의 파일을 따로 reconstructPar을 해주어야 하며 mkdir로 임시 파일을 생성후에 0 constrol 파일을 옮겨서 conPar 후에 계산된 tstep을 옮겨주면된다. 화이팅!
 ============================================================
 64. 추천 SLURM 실행 script
 ============================================================
