@@ -1098,11 +1098,11 @@ PREEMPTED
 예
 
 sbatch \
--p <PARTITION> \
+-p <PARTITION> \ #노드 이름
 -N 1 \
 -n 12 \
--J openfoam \
--o log.openfoam \
+-J openfoam \ #아무거나 상관없음
+-o log.openfoam \ #로그파일 따로 저장 (이름상관없음)
 --wrap='module load <MPI_MODULE> && source <OPENFOAM_BASHRC> && mpirun -np 12 pimpleFoam -parallel'
 
 
@@ -1215,6 +1215,7 @@ batch job에서는 중요한 환경설정 명령 사이에 &&를 사용하는 �
 ============================================================
 
 계산이 반복된다면 --wrap보다 script가 더 좋다.
+(걍 복붙으로 이름 집어넣는게 빠를수도)
 
 
 예
@@ -1790,7 +1791,7 @@ reconstructPar
 sbatch
 
 
-주의가 필요한 명령
+주의가 필요한 명령 (아마 관리자에서 막았을 가능성이 높음)
 
 scancel
 rm
@@ -1810,6 +1811,7 @@ mv processor* DEST
 
 > important_file
 
+sudo 명령어의 경우 관리자가 아닌이상 사용을 절대 금지한다
 
 와일드카드 또는 경로 오타로 피해 범위가 매우 커질 수 있다.
 
